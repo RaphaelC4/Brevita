@@ -1,0 +1,14 @@
+network:
+  type: studio
+  url: http://localhost:8000
+
+contracts:
+  - path: contracts/brevita.py
+    id: Brevita
+
+tests:
+  integration:
+    enabled: true
+    timeout: 120
+  direct:
+    enabled: true
