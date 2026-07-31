@@ -5,6 +5,7 @@
 [build.environment]
   NPM_FLAGS = "--legacy-peer-deps"
   NODE_VERSION = "22"
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_CONTRACT_ADDRESS,NEXT_PUBLIC_NETWORK,NEXT_PUBLIC_STUDIO_URL"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
