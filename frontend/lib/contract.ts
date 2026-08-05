@@ -59,14 +59,43 @@ export async function createPolicy(params: {
   return receipt
 }
 
-export async function checkAndTrigger(policyId: number) {
-  const receipt = await writeContract("check_and_trigger", [policyId])
-  return receipt
+const STATUS_ACTIVE = 0
+const STATUS_TRIGGERED = 1
+const STATUS_PAID_OUT = 2
+const STATUS_EXPIRED = 3
+const STATUS_CANCELLED = 4
+const STATUS_DISPUTED = 5
+
+function verdictFromStatus(status: number, resolved: string, denied: string) {
+  if (status === STATUS_PAID_OUT) return resolved
+  if (status === STATUS_DISPUTED || status === STATUS_EXPIRED) return denied
+  return null
 }
 
-export async function resolveDisputeOnChain(policyId: number) {
+export interface TriggerResult {
+  receipt: unknown
+  verdict: string | null
+  policy: ReturnType<typeof toPolicy> | null
+}
+
+export async function checkAndTrigger(policyId: number): Promise<TriggerResult> {
+  const receipt = await writeContract("check_and_trigger", [policyId])
+  const policy = await getPolicy(policyId)
+  return {
+    receipt,
+    verdict: policy ? verdictFromStatus(policy.status, "YES", "NO") : null,
+    policy,
+  }
+}
+
+export async function resolveDisputeOnChain(policyId: number): Promise<TriggerResult> {
   const receipt = await writeContract("resolve_dispute", [policyId])
-  return receipt
+  const policy = await getPolicy(policyId)
+  return {
+    receipt,
+    verdict: policy ? verdictFromStatus(policy.status, "TRUE", "FALSE") : null,
+    policy,
+  }
 }
 
 export async function cancelPolicy(policyId: number) {

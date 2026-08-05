@@ -1,6 +1,5 @@
 import pytest
 import re
-from gltest.direct.loader import create_address
 
 CONTRACT = "contracts/brevita.py"
 STATUS_ACTIVE = 0
@@ -136,83 +135,13 @@ def _dispute_policy(contract, direct_vm, pid):
     direct_vm.clear_mocks()
 
 
-def _mock_oracle_hook(state: dict):
+def test_resolve_dispute_true_end_to_end(direct_deploy, direct_vm, direct_alice, direct_bob):
     """
-    Simulates a deployed Intelligent Oracle contract by intercepting
-    cross-contract calls (CallContract) and responding to get_status()/
-    get_dict() the way a real oracle contract would - this is a direct
-    on-chain contract-to-contract call, not an HTTP mock.
+    Full authorized path: dispute a policy, then resolve it via GenLayer's
+    own second-round consensus (no external oracle). Confirms the write is
+    tied to a real sender and that a successful resolution is correctly
+    reflected in on-chain state.
     """
-    from genlayer.py import calldata
-
-    def hook(vm, request):
-        if "CallContract" not in request:
-            return None
-        method = request["CallContract"]["calldata"].get("method")
-        if method == "get_status":
-            return bytes([0]) + calldata.encode(state["status"])
-        if method == "get_dict":
-            return bytes([0]) + calldata.encode(state)
-        return None
-    return hook
-
-
-def test_open_dispute_links_valid_oracle(direct_deploy, direct_vm, direct_alice):
-    contract = direct_deploy(CONTRACT)
-    pid = _create_policy(
-        contract, direct_vm, direct_alice,
-        event_type="drought", location="Texas", trigger_condition="No rain 30 days", payout=1000,
-    )
-    _dispute_policy(contract, direct_vm, pid)
-
-    oracle_addr = create_address("oracle-valid")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Did a drought occur in Texas?",
-        "description": f"policy #{pid} appeal",
-        "status": "Active",
-        "outcome": "",
-    })
-
-    result = contract.open_dispute(pid, oracle_addr)
-    assert result is True
-
-    policy = contract.get_policy(pid)
-    assert policy.oracle_address == oracle_addr
-
-
-def test_open_dispute_rejects_mismatched_oracle(direct_deploy, direct_vm, direct_alice):
-    contract = direct_deploy(CONTRACT)
-    pid = _create_policy(
-        contract, direct_vm, direct_alice,
-        event_type="drought", location="Texas", trigger_condition="No rain 30 days", payout=1000,
-    )
-    _dispute_policy(contract, direct_vm, pid)
-
-    oracle_addr = create_address("oracle-wrong")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Unrelated market",
-        "description": "policy #999 appeal",  # wrong policy id
-        "status": "Active",
-        "outcome": "",
-    })
-
-    with pytest.raises(AssertionError, match=re.escape("Oracle description does not reference this policy")):
-        contract.open_dispute(pid, oracle_addr)
-
-
-def test_resolve_dispute_requires_linked_oracle(direct_deploy, direct_vm, direct_alice):
-    contract = direct_deploy(CONTRACT)
-    pid = _create_policy(
-        contract, direct_vm, direct_alice,
-        event_type="drought", location="Texas", trigger_condition="No rain 30 days", payout=1000,
-    )
-    _dispute_policy(contract, direct_vm, pid)
-
-    with pytest.raises(AssertionError, match=re.escape("No oracle linked - call open_dispute first")):
-        contract.resolve_dispute(pid)
-
-
-def test_resolve_dispute_yes(direct_deploy, direct_vm, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT)
     pid = _create_policy(
         contract, direct_vm, direct_alice,
@@ -221,26 +150,27 @@ def test_resolve_dispute_yes(direct_deploy, direct_vm, direct_alice, direct_bob)
     )
     _dispute_policy(contract, direct_vm, pid)
 
-    oracle_addr = create_address("oracle-yes")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Did a drought occur in Texas?",
-        "description": f"policy #{pid} appeal",
-        "status": "Resolved",
-        "outcome": "Yes",
-    })
-    contract.open_dispute(pid, oracle_addr)
-
-    # Resolution is permissionless - anyone (e.g. Bob) can trigger it
+    # Appeal resolution is permissionless - anyone (e.g. Bob) can call it -
+    # but it must still be a real, authorized sender (not a bypass of
+    # signing), which direct_vm.sender models.
     direct_vm.sender = direct_bob
+    direct_vm.clear_mocks()
+    direct_vm.mock_web(r"weather\.gov", {"method": "GET", "status": 200, "body": "cloudy"})
+    direct_vm.mock_llm(r".*", "TRUE")
+
     verdict = contract.resolve_dispute(pid)
 
-    assert verdict == "Yes"
+    assert verdict == "TRUE"
     policy = contract.get_policy(pid)
     assert policy.status == STATUS_PAID_OUT
     assert contract.get_accumulated_revenue() == 500  # premium retained
 
 
-def test_resolve_dispute_no(direct_deploy, direct_vm, direct_alice):
+def test_resolve_dispute_false_end_to_end(direct_deploy, direct_vm, direct_alice):
+    """
+    Same path, opposite verdict: confirms a FALSE ruling correctly settles
+    the policy as expired and forfeits the full deposit to revenue.
+    """
     contract = direct_deploy(CONTRACT)
     pid = _create_policy(
         contract, direct_vm, direct_alice,
@@ -248,63 +178,16 @@ def test_resolve_dispute_no(direct_deploy, direct_vm, direct_alice):
     )
     _dispute_policy(contract, direct_vm, pid)
 
-    oracle_addr = create_address("oracle-no")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Did a drought occur in Texas?",
-        "description": f"policy #{pid} appeal",
-        "status": "Resolved",
-        "outcome": "No",
-    })
-    contract.open_dispute(pid, oracle_addr)
+    direct_vm.clear_mocks()
+    direct_vm.mock_web(r"weather\.gov", {"method": "GET", "status": 200, "body": "cloudy"})
+    direct_vm.mock_llm(r".*", "FALSE")
+
     verdict = contract.resolve_dispute(pid)
 
-    assert verdict == "No"
+    assert verdict == "FALSE"
     policy = contract.get_policy(pid)
     assert policy.status == STATUS_EXPIRED
-    # rejected claim: whole deposit (payout reserve + premium) becomes revenue
-    assert contract.get_accumulated_revenue() == 2000
-
-
-def test_resolve_dispute_still_active_reverts(direct_deploy, direct_vm, direct_alice):
-    contract = direct_deploy(CONTRACT)
-    pid = _create_policy(
-        contract, direct_vm, direct_alice,
-        event_type="drought", location="Texas", trigger_condition="No rain 30 days", payout=1000,
-    )
-    _dispute_policy(contract, direct_vm, pid)
-
-    oracle_addr = create_address("oracle-active")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Did a drought occur in Texas?",
-        "description": f"policy #{pid} appeal",
-        "status": "Active",  # earliest_resolution_date hasn't passed yet, or resolve() not called
-        "outcome": "",
-    })
-    contract.open_dispute(pid, oracle_addr)
-
-    with pytest.raises(AssertionError, match=re.escape("Oracle has not reached a final verdict yet")):
-        contract.resolve_dispute(pid)
-
-
-def test_resolve_dispute_oracle_error_reverts(direct_deploy, direct_vm, direct_alice):
-    contract = direct_deploy(CONTRACT)
-    pid = _create_policy(
-        contract, direct_vm, direct_alice,
-        event_type="drought", location="Texas", trigger_condition="No rain 30 days", payout=1000,
-    )
-    _dispute_policy(contract, direct_vm, pid)
-
-    oracle_addr = create_address("oracle-error")
-    direct_vm._gl_call_hook = _mock_oracle_hook({
-        "title": "Did a drought occur in Texas?",
-        "description": f"policy #{pid} appeal",
-        "status": "Error",  # validators picked an outcome outside potential_outcomes
-        "outcome": "",
-    })
-    contract.open_dispute(pid, oracle_addr)
-
-    with pytest.raises(AssertionError, match=re.escape("Oracle resolution failed (Error)")):
-        contract.resolve_dispute(pid)
+    assert contract.get_accumulated_revenue() == 2000  # full deposit forfeited
 
 
 def test_resolve_dispute_requires_disputed_status(direct_deploy, direct_vm, direct_alice):

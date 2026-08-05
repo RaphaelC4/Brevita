@@ -1,21 +1,26 @@
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? ""
 
 let activeAccount: string | null = null
+let cachedClient: any = null
+let cachedWriteClient: any = null
 
 export function setActiveAccount(address: string | null) {
   activeAccount = address
+  cachedWriteClient = null
 }
 
 async function getClient() {
+  if (cachedClient) return cachedClient
   const { createClient } = await import("genlayer-js")
   const { studionet } = await import("genlayer-js/chains")
 
   // studionet's built-in endpoint already points at the hosted Studio
   // backend. Don't override it unless you're running Studio locally via
   // `genlayer up`, in which case pass endpoint: 'http://localhost:4000/api'.
-  return createClient({
+  cachedClient = createClient({
     chain: studionet,
   })
+  return cachedClient
 }
 
 export async function readContract(
@@ -98,11 +103,20 @@ function assertTransactionSucceeded(receipt: any, functionName: string) {
 }
 
 async function getWriteClient() {
+  if (cachedWriteClient) return cachedWriteClient
+  if (!activeAccount) {
+    throw new Error("No wallet connected. Connect your wallet before submitting a transaction.")
+  }
   const { createClient } = await import("genlayer-js")
   const { studionet } = await import("genlayer-js/chains")
 
-  return createClient({
+  const provider =
+    typeof window !== "undefined" ? (window as any).ethereum : undefined
+
+  cachedWriteClient = createClient({
     chain: studionet,
     account: activeAccount as `0x${string}`,
+    ...(provider ? { provider } : {}),
   })
+  return cachedWriteClient
 }

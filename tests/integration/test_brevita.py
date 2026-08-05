@@ -89,3 +89,76 @@ def test_holder_policies(studio):
     holder = contract.account.address
     policies = contract.read("get_policies_by_holder", args=[holder])
     assert len(policies) == 3
+
+
+def test_e2e_claim_signed_resolution(studio):
+    """Claim path e2e: a signed write resolves the claim on-chain.
+
+    The sender is the policy holder's signing account, the transaction is
+    accepted by consensus, and the policy leaves the active state.
+    """
+    contract = studio.deploy("contracts/brevita.py")
+
+    tx = contract.write(
+        "create_policy",
+        args=[
+            "drought",
+            "California Central Valley",
+            "D3 drought level for 4+ consecutive weeks",
+            ["https://droughtmonitor.unl.edu", "https://weather.com"],
+            5000,
+            180,
+        ],
+        value=6000,
+    )
+    create_receipt = tx.wait()
+    assert create_receipt.status == "success"
+
+    trigger_tx = contract.write("check_and_trigger", args=[1])
+    trigger_receipt = trigger_tx.wait()
+    assert trigger_receipt.status == "success"
+
+    policy = contract.read("get_policy", args=[1])
+    assert policy["status"] in (2, 5)  # PAID_OUT or DISPUTED
+
+
+def test_e2e_appeal_signed_resolution(studio):
+    """Appeal path e2e: a signed write resolves a disputed policy on-chain.
+
+    First auto-adjudication returns NO (policy enters dispute), then the
+    appeal write settles it to a terminal state (PAID_OUT or EXPIRED).
+    Skips the appeal step if the first pass happened to return YES.
+    """
+    contract = studio.deploy("contracts/brevita.py")
+
+    # Intentionally-unmet trigger biases the first pass toward NO/UNDECIDED.
+    tx = contract.write(
+        "create_policy",
+        args=[
+            "drought",
+            "Death Valley",
+            "Monsoon rains exceeding 1000mm in a single day",
+            ["https://droughtmonitor.unl.edu"],
+            1000,
+            90,
+        ],
+        value=1200,
+    )
+    create_receipt = tx.wait()
+    assert create_receipt.status == "success"
+
+    trigger_tx = contract.write("check_and_trigger", args=[1])
+    trigger_receipt = trigger_tx.wait()
+    assert trigger_receipt.status == "success"
+
+    policy = contract.read("get_policy", args=[1])
+    if policy["status"] != 5:  # DISPUTED
+        # First pass already resolved the claim; nothing left to appeal.
+        return
+
+    appeal_tx = contract.write("resolve_dispute", args=[1])
+    appeal_receipt = appeal_tx.wait()
+    assert appeal_receipt.status == "success"
+
+    settled = contract.read("get_policy", args=[1])
+    assert settled["status"] in (2, 3)  # PAID_OUT or EXPIRED

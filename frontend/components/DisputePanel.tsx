@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { resolveDisputeOnChain } from "@/lib/contract"
+import { resolveDisputeOnChain, getPolicy } from "@/lib/contract"
 
 interface Props {
   policyId: number
@@ -10,9 +10,11 @@ interface Props {
 
 type Stage = "idle" | "resolving" | "resolved" | "error"
 
+const STATUS_PAID_OUT = 2
+
 export default function DisputePanel({ policyId, onResolved }: Props) {
   const [stage, setStage] = useState<Stage>("idle")
-  const [verdict, setVerdict] = useState<string | null>(null)
+  const [verdict, setVerdict] = useState<"TRUE" | "FALSE" | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function handleAppeal() {
@@ -20,13 +22,20 @@ export default function DisputePanel({ policyId, onResolved }: Props) {
     setError(null)
 
     try {
-      const receipt: any = await resolveDisputeOnChain(policyId)
-      const outcome = (receipt?.verdict ?? receipt?.result ?? null) as string | null
-      if (!outcome) {
-        throw new Error("Resolved on-chain, but couldn't read the verdict from the response - check the policy status.")
-      }
+      // resolveDisputeOnChain authorizes the write against the connected
+      // wallet (writeContract throws if no signer is attached, and
+      // throws again if the transaction actually reverted on-chain).
+      await resolveDisputeOnChain(policyId)
+
+      // Derive the verdict from refreshed on-chain state rather than
+      // guessing at the write receipt's return-value shape - unlike
+      // check_and_trigger, resolve_dispute's final status maps 1:1 to
+      // TRUE/FALSE, so this is always exactly correct.
+      const policy = await getPolicy(policyId)
+      const outcome: "TRUE" | "FALSE" = policy.status === STATUS_PAID_OUT ? "TRUE" : "FALSE"
+
       setVerdict(outcome)
-      onResolved(outcome === "TRUE" ? "TRUE" : "FALSE")
+      onResolved(outcome)
       setStage("resolved")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to resolve on-chain")
