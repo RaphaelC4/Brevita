@@ -1,5 +1,24 @@
 import { readContract, writeContract } from "./genlayer"
 
+// The contract stores payout/premium/value as u256 wei (1 GEN = 10^18 wei),
+// but the UI works in whole GEN. All conversion happens at this boundary -
+// nowhere else in the app should do this math.
+const WEI_PER_GEN = 1_000_000_000_000_000_000n
+
+function toWei(gen: number): bigint {
+  return BigInt(Math.round(gen)) * WEI_PER_GEN
+}
+
+function fromWei(value: JsonValue | undefined): number {
+  // u256 amounts can exceed Number.MAX_SAFE_INTEGER once scaled to wei
+  // (anything above ~0.009 GEN), so the wei value itself must stay a
+  // BigInt until the final division - converting early with Number()
+  // silently corrupts the amount.
+  if (value === null || value === undefined) return 0
+  const wei = typeof value === "string" ? BigInt(value) : BigInt(Math.trunc(Number(value)))
+  return Number(wei) / 1e18
+}
+
 type JsonValue =
   | string
   | number
@@ -16,8 +35,8 @@ function toPolicy(raw: Record<string, JsonValue>) {
     location: String(raw.location ?? ""),
     trigger_condition: String(raw.trigger_condition ?? ""),
     data_sources: parseDataSources(raw.data_sources),
-    payout: Number(raw.payout ?? 0),
-    premium: Number(raw.premium ?? 0),
+    payout: fromWei(raw.payout),
+    premium: fromWei(raw.premium),
     status: Number(raw.status ?? 0),
     created_at: Number(raw.created_at ?? 0),
     expires_at: Number(raw.expires_at ?? 0),
@@ -44,6 +63,10 @@ export async function createPolicy(params: {
   payout: number
   expires_after_days: number
 }) {
+  const payoutWei = toWei(params.payout)
+  const premiumWei = payoutWei / 5n // 20% premium, same ratio as before
+  const valueWei = payoutWei + premiumWei
+
   const receipt = await writeContract(
     "create_policy",
     [
@@ -51,10 +74,10 @@ export async function createPolicy(params: {
       params.location,
       params.trigger_condition,
       params.data_sources,
-      params.payout,
+      payoutWei,
       params.expires_after_days,
     ],
-    params.payout + Math.floor(params.payout * 0.2)
+    valueWei
   )
   return receipt
 }
@@ -124,11 +147,11 @@ export async function getPolicyCount() {
 }
 
 export async function withdrawRevenue(amount: number) {
-  const receipt = await writeContract("withdraw_revenue", [amount])
+  const receipt = await writeContract("withdraw_revenue", [toWei(amount)])
   return receipt
 }
 
 export async function getAccumulatedRevenue() {
   const raw = await readContract("get_accumulated_revenue", [])
-  return Number(raw ?? 0)
+  return fromWei(raw as JsonValue)
 }

@@ -39,7 +39,7 @@ export async function readContract(
 export async function writeContract(
   functionName: string,
   args: any[] = [],
-  value: number = 0,
+  value: number | bigint = 0,
   address: string = CONTRACT_ADDRESS
 ) {
   if (!activeAccount) {
@@ -53,7 +53,7 @@ export async function writeContract(
     address: address as `0x${string}`,
     functionName,
     args,
-    value: BigInt(value),
+    value: typeof value === "bigint" ? value : BigInt(value),
   })
 
   const receipt: any = await (client as any).waitForTransactionReceipt({
