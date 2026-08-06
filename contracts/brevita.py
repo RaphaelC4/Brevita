@@ -1,4 +1,4 @@
-# { "Depends": "py-genlayer:test" }
+# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" } 
 
 import datetime
 from dataclasses import dataclass
@@ -26,6 +26,21 @@ class Policy:
     status: u256
     created_at: u256
     expires_at: u256
+
+
+@gl.evm.contract_interface
+class _EOA:
+    """
+    Sending GEN to an EOA is an *external* message (chain layer), not an
+    internal IC-to-IC message. gl.get_contract_at(...).emit_transfer(...)
+    is the internal-message path and does not reliably deliver to a plain
+    wallet address - this EVM contract interface is the mechanism GenLayer
+    actually requires for EOA/EVM-contract recipients.
+    """
+    class View:
+        pass
+    class Write:
+        pass
 
 
 class Brevita(gl.Contract):
@@ -139,7 +154,8 @@ class Brevita(gl.Contract):
         if verdict == "YES":
             policy.status = STATUS_TRIGGERED
             self.policies[idx] = policy
-            gl.get_contract_at(policy.holder).emit_transfer(value=policy.payout)
+            holder = policy.holder if isinstance(policy.holder, Address) else Address(policy.holder)
+            _EOA(holder).emit_transfer(value=policy.payout)
             policy.status = STATUS_PAID_OUT
             self.policies[idx] = policy
             self.accumulated_revenue += policy.premium
@@ -160,7 +176,8 @@ class Brevita(gl.Contract):
 
         policy.status = STATUS_CANCELLED
         self.policies[idx] = policy
-        gl.get_contract_at(policy.holder).emit_transfer(value=policy.payout)
+        holder = policy.holder if isinstance(policy.holder, Address) else Address(policy.holder)
+        _EOA(holder).emit_transfer(value=policy.payout)
         self.accumulated_revenue += policy.premium
         return True
 
@@ -220,7 +237,8 @@ class Brevita(gl.Contract):
         if verdict == "TRUE":
             policy.status = STATUS_TRIGGERED
             self.policies[idx] = policy
-            gl.get_contract_at(policy.holder).emit_transfer(value=policy.payout)
+            holder = policy.holder if isinstance(policy.holder, Address) else Address(policy.holder)
+            _EOA(holder).emit_transfer(value=policy.payout)
             policy.status = STATUS_PAID_OUT
             self.policies[idx] = policy
             self.accumulated_revenue += policy.premium
@@ -233,12 +251,17 @@ class Brevita(gl.Contract):
 
     @gl.public.write
     def withdraw_revenue(self, amount: u256) -> bool:
-        assert gl.message.sender_address == self.owner, "Only owner can withdraw"
+        owner = self.owner if isinstance(self.owner, Address) else Address(self.owner)
+        assert gl.message.sender_address == owner, "Only owner can withdraw"
         assert amount > 0, "Amount must be > 0"
         assert amount <= self.accumulated_revenue, "Amount exceeds withdrawable revenue"
 
+        # Debit only after the transfer call has been made. emit_transfer is
+        # fire-and-forget in GenVM (it never raises, even on failure), so this
+        # can't guarantee delivery - but it prevents the one avoidable bug:
+        # revenue vanishing from the ledger before any transfer was even attempted.
+        _EOA(owner).emit_transfer(value=amount)
         self.accumulated_revenue -= amount
-        gl.get_contract_at(self.owner).emit_transfer(value=amount)
         return True
 
     @gl.public.view
