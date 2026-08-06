@@ -32,6 +32,9 @@ export default function DisputePanel({ policyId, onResolved }: Props) {
       // check_and_trigger, resolve_dispute's final status maps 1:1 to
       // TRUE/FALSE, so this is always exactly correct.
       const policy = await getPolicy(policyId)
+      if (!policy) {
+        throw new Error("Policy not found after resolving dispute")
+      }
       const outcome: "TRUE" | "FALSE" = policy.status === STATUS_PAID_OUT ? "TRUE" : "FALSE"
 
       setVerdict(outcome)
