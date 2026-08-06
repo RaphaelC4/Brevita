@@ -37,6 +37,9 @@ export default function TriggerClaimButton({ policyId, onTriggered }: TriggerCla
       // that actually matters to the user (paid vs needs appeal) is
       // always correctly reflected in policy.status.
       const policy = await getPolicy(policyId)
+      if (!policy) {
+        throw new Error("Policy not found after triggering claim")
+      }
       setResult(policy.status === STATUS_PAID_OUT ? "APPROVED" : "DENIED")
       onTriggered?.()
     } catch (err) {
