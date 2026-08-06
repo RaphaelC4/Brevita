@@ -3,7 +3,7 @@ import { readContract, writeContract } from "./genlayer"
 // The contract stores payout/premium/value as u256 wei (1 GEN = 10^18 wei),
 // but the UI works in whole GEN. All conversion happens at this boundary -
 // nowhere else in the app should do this math.
-const WEI_PER_GEN = 1_000_000_000_000_000_000n
+const WEI_PER_GEN = BigInt("1000000000000000000")
 
 function toWei(gen: number): bigint {
   return BigInt(Math.round(gen)) * WEI_PER_GEN
@@ -64,7 +64,7 @@ export async function createPolicy(params: {
   expires_after_days: number
 }) {
   const payoutWei = toWei(params.payout)
-  const premiumWei = payoutWei / 5n // 20% premium, same ratio as before
+  const premiumWei = payoutWei / BigInt(5) // 20% premium, same ratio as before
   const valueWei = payoutWei + premiumWei
 
   const receipt = await writeContract(
